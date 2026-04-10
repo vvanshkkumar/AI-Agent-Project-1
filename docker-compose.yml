@@ -1,0 +1,24 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: dockerfile
+    ports:
+      - "8080:8000"
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+     # volumes:
+    #   - ./backend/src:/app
+
+    develop:
+      watch:
+        - action: rebuild
+          path: ./backend/requirements.txt
+
+        - action: rebuild
+          path: ./backend/dockerfile
+
+        - action: sync
+          path: ./backend/src
+          target: /app
+   
