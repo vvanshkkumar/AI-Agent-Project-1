@@ -1,5 +1,8 @@
 FROM python:3.12.10-slim
 
+#host.docker.internal -> localhost
+RUN apt-get update && apt-get install -y curl
+
 RUN python -m venv /opt/venv
 
 ENV PATH="/opt/venv/bin:$PATH"
