@@ -1,5 +1,8 @@
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
+
+from api.ai.schemas import EmailMessageSchema
+from api.ai.services import generate_email
 from .db_models import ChatMessage, ChatMessagePayload
 from db import get_session
 
@@ -21,14 +24,15 @@ def chat_list_messages(session : Session = Depends(get_session)):
     return results
 
 
-# curl -X POST -d '{"message" : "checking only"}' -H"Content-Type: application/json" http://localhost:8000/api/create/
-@router.post("/create/",response_model=ChatMessage)
+# curl -X POST -d '{"message" : "got fired from job without any reason"}' -H"Content-Type: application/json" http://localhost:8000/api/create/
+@router.post("/create/", response_model=EmailMessageSchema)
 def chat_create_message(payload:ChatMessagePayload,
                         session: Session = Depends(get_session)) :
     data = payload.model_dump()    # convert the obj to dict
     obj = ChatMessage.model_validate(data) # validate if no component is missing
     session.add(obj)
     session.commit()
-    session.refresh(obj) # ensures that the data is successfully inserted/added                    
+    # session.refresh(obj) # ensures that the data is successfully inserted/added  
+    response = generate_email(payload.message)                  
     
-    return obj
+    return response
