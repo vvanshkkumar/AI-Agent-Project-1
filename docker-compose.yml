@@ -5,10 +5,10 @@ services:
       dockerfile: dockerfile
 
     ports:
-      - "8080:8000"
+      - "8000:8000"
 
     environment:
-      DATABASE_URL: postgresql://dbuser:db-password@db_service:5432/mydb
+      DATABASE_URL: postgresql+psycopg://dbuser:db-password@db_service:5432/mydb
 
     depends_on:
       - db_service

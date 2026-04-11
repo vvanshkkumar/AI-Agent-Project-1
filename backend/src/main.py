@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from db import init_db, get_session
+from api.chat.routing import router as chat_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -8,6 +9,7 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(chat_router,prefix="/get/chats")
 
 @app.get("/")
 async def read_root():
