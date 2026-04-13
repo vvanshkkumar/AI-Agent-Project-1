@@ -23,6 +23,7 @@ services:
     # Live code from the host (compose run / up). Without this, /app is only what was COPY'd at build time.
     volumes:
       - ./backend/src:/app
+      - ./backend/data:/app/data
 
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 

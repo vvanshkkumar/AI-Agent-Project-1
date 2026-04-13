@@ -1,11 +1,11 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from api.ai.schemas import EmailMessageSchema
-from api.ai.llms import get_openai_llm
+from api.ai.llms import get_chat_llm
 
 
 def generate_email(query:str) -> EmailMessageSchema :
-    llm_base = get_openai_llm()
+    llm_base = get_chat_llm()
     llm = llm_base.with_structured_output(EmailMessageSchema)
 
     message = [

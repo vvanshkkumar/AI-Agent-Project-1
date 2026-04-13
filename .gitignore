@@ -22,3 +22,20 @@ rad.json
 TestResults.xml
 
 .env
+
+# Python
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
+
+# Generated app content
+data/
+backend/data/
+backend/src/data/

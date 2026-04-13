@@ -6,3 +6,8 @@ requests
 langchain
 langchain-openai
 langgraph
+langchain-community
+tavily-python
+google-genai
+apscheduler
+markdown
