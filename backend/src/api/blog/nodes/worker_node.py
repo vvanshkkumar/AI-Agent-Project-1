@@ -1,8 +1,8 @@
 from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.types import Send
 
 from api.blog.schemas import EvidenceItem, Plan, Task
 from api.blog.state import BlogState
+from observers.publisher import publisher
 
 WORKER_SYSTEM = """You are a senior technical writer and developer advocate.
 Write ONE section of a technical blog post in Markdown.
@@ -28,6 +28,28 @@ Code:
 
 
 def worker_node(payload: dict, llm):
+    run_id = payload.get("run_id", "unknown")
+    publisher.on_node_enter(run_id, "worker_node")
+    try:
+        task, section_md = generate_section_from_payload(payload, llm)
+
+        publisher.on_node_exit(
+            run_id,
+            "worker_node",
+            "SUCCESS",
+            {
+                "task_id": task.id,
+                "section_title": task.title,
+                "section_chars": len(section_md),
+            },
+        )
+        return {"sections": [(task.id, section_md)]}
+    except Exception as exc:
+        publisher.on_node_exit(run_id, "worker_node", "FAILED", {"error": str(exc)})
+        raise
+
+
+def generate_section_from_payload(payload: dict, llm) -> tuple[Task, str]:
     task = Task(**payload["task"])
     plan = Plan(**payload["plan"])
     evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
@@ -64,28 +86,4 @@ def worker_node(payload: dict, llm):
             ),
         ]
     ).content.strip()
-
-    return {"sections": [(task.id, section_md)]}
-
-
-def fanout(state: BlogState):
-    assert state["plan"] is not None
-    ws = state.get("workspace_dir", ".")
-    rid = state.get("run_id", "")
-    return [
-        Send(
-            "worker",
-            {
-                "task": task.model_dump(),
-                "topic": state["topic"],
-                "mode": state["mode"],
-                "as_of": state["as_of"],
-                "recency_days": state["recency_days"],
-                "plan": state["plan"].model_dump(),
-                "evidence": [e.model_dump() for e in state.get("evidence", [])],
-                "workspace_dir": ws,
-                "run_id": rid,
-            },
-        )
-        for task in state["plan"].tasks
-    ]
+    return task, section_md

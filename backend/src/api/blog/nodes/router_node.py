@@ -2,6 +2,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from api.blog.schemas import RouterDecision
 from api.blog.state import BlogState
+from observers.publisher import publisher
 
 ROUTER_SYSTEM = """You are a routing module for a technical blog planner.
 
@@ -19,27 +20,43 @@ If needs_research=true:
 
 
 def router_node(state: BlogState, llm):
-    decider = llm.with_structured_output(RouterDecision)
-    decision = decider.invoke(
-        [
-            SystemMessage(content=ROUTER_SYSTEM),
-            HumanMessage(content=f"Topic: {state['topic']}\nAs-of date: {state['as_of']}"),
-        ]
-    )
+    run_id = state.get("run_id", "unknown")
+    publisher.on_node_enter(run_id, "router_node")
+    try:
+        decider = llm.with_structured_output(RouterDecision)
+        decision = decider.invoke(
+            [
+                SystemMessage(content=ROUTER_SYSTEM),
+                HumanMessage(content=f"Topic: {state['topic']}\nAs-of date: {state['as_of']}"),
+            ]
+        )
 
-    if decision.mode == "open_book":
-        recency_days = 7
-    elif decision.mode == "hybrid":
-        recency_days = 45
-    else:
-        recency_days = 3650
+        if decision.mode == "open_book":
+            recency_days = 7
+        elif decision.mode == "hybrid":
+            recency_days = 45
+        else:
+            recency_days = 3650
 
-    return {
-        "needs_research": decision.needs_research,
-        "mode": decision.mode,
-        "queries": decision.queries,
-        "recency_days": recency_days,
-    }
+        publisher.on_node_exit(
+            run_id,
+            "router_node",
+            "SUCCESS",
+            {
+                "mode": decision.mode,
+                "needs_research": decision.needs_research,
+                "query_count": len(decision.queries),
+            },
+        )
+        return {
+            "needs_research": decision.needs_research,
+            "mode": decision.mode,
+            "queries": decision.queries,
+            "recency_days": recency_days,
+        }
+    except Exception as exc:
+        publisher.on_node_exit(run_id, "router_node", "FAILED", {"error": str(exc)})
+        raise
 
 
 def route_next(state: BlogState) -> str:
