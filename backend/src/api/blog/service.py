@@ -20,6 +20,7 @@ def run_blog_generation(topic: str) -> dict:
         "workspace_dir": str(workspace),
         "as_of": date.today().isoformat(),
         "sections": [],
+        "expected_section_count": 0,
         "evidence": [],
         "queries": [],
         "mode": "closed_book",

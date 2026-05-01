@@ -23,6 +23,7 @@ class BlogState(TypedDict):
     recency_days: int
 
     sections: Annotated[List[tuple[int, str]], operator.add]
+    expected_section_count: NotRequired[int]
 
     merged_md: str
     md_with_placeholders: str
