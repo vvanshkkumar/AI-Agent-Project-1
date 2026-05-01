@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import desc
+from sqlalchemy import asc, desc
 from sqlmodel import Session, select
 
 from cache import (
@@ -13,7 +13,7 @@ from cache import (
     get_cached_preview,
     set_cached_preview,
 )
-from api.blog.db_models import ScheduledEmail
+from api.blog.db_models import ScheduledEmail, SectionAttempt
 from api.blog.newsletter import build_schedule_body, read_run_markdown, send_existing_run_email
 from api.blog.presentation import normalize_markdown_for_web, render_markdown_html
 from api.blog.runtime import describe_blog_runtime
@@ -191,6 +191,49 @@ def blog_runtime():
 @router.get("/runs/{run_id}/status")
 def blog_run_status(run_id: str):
     return get_run_status(run_id)
+
+
+@router.get("/runs/{run_id}/sections")
+def blog_run_sections(
+    run_id: str,
+    session: Session = Depends(get_session),
+):
+    stmt = (
+        select(SectionAttempt)
+        .where(SectionAttempt.run_id == run_id)
+        .order_by(asc(SectionAttempt.task_id))
+    )
+    sections = list(session.exec(stmt).all())
+    completed = sum(1 for section in sections if section.status == "DONE")
+    in_progress = sum(1 for section in sections if section.status == "PROCESSING")
+    pending = sum(1 for section in sections if section.status == "PENDING")
+    failed = sum(1 for section in sections if section.status == "FAILED")
+    permanently_failed = sum(
+        1 for section in sections if section.status == "PERMANENTLY_FAILED"
+    )
+    return {
+        "run_id": run_id,
+        "sections": [
+            {
+                "task_id": section.task_id,
+                "status": section.status,
+                "attempts": section.attempts,
+                "last_attempt_at": (
+                    section.last_attempt_at.isoformat()
+                    if section.last_attempt_at
+                    else None
+                ),
+                "error_message": section.error_message,
+            }
+            for section in sections
+        ],
+        "total": len(sections),
+        "completed": completed,
+        "in_progress": in_progress,
+        "pending": pending,
+        "failed": failed,
+        "permanently_failed": permanently_failed,
+    }
 
 
 @router.get("/runs/{run_id}/markdown", response_class=PlainTextResponse)

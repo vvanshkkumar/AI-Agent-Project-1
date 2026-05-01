@@ -62,6 +62,7 @@ The app auto-loads `.env` from the project root for local development.
 - `GET /api/blog/scheduled`
 - `GET /api/blog/runtime`
 - `GET /api/blog/runs/{run_id}/status`
+- `GET /api/blog/runs/{run_id}/sections`
 - `GET /api/blog/runs/{run_id}/markdown`
 - `GET /api/blog/runs/{run_id}/preview`
 - `GET /api/jobs/failed`
@@ -132,6 +133,16 @@ reducer
 ```
 
 The blog worker uses manual Kafka offset commits. It writes the section file and publishes the result before committing the consumed task offset, so a worker crash before commit causes Kafka redelivery. Existing section files are treated as idempotency hits to avoid duplicate Gemini calls on redelivery.
+
+Each planned section also gets a `section_attempts` row. Workers update those rows from `PENDING` to `PROCESSING`, `DONE`, `FAILED`, or `PERMANENTLY_FAILED`. A section is treated as a poison message after `KAFKA_SECTION_MAX_ATTEMPTS=3`, and the worker commits the Kafka offset so the consumer group can continue.
+
+Use:
+
+```text
+GET /api/blog/runs/{run_id}/sections
+```
+
+to inspect per-section status, attempts, timestamps, and errors.
 
 Run multiple workers locally with:
 
