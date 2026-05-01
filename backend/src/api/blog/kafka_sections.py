@@ -5,8 +5,11 @@ from functools import lru_cache
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import TopicAlreadyExistsError
+from sqlmodel import Session, select
 
+from api.blog.db_models import SectionAttempt
 from api.blog.state import BlogState
+from db import get_engine
 from kafka_config import (
     BLOG_SECTIONS_TOPIC,
     BLOG_TASKS_TOPIC,
@@ -62,6 +65,7 @@ def publish_blog_tasks(state: BlogState) -> int:
     if plan is None:
         raise ValueError("publish_blog_tasks called without a plan.")
 
+    initialize_section_attempts(state)
     producer = get_blog_task_producer()
     expected_total = len(plan.tasks)
     for task in plan.tasks:
@@ -85,6 +89,29 @@ def publish_blog_tasks(state: BlogState) -> int:
         )
     producer.flush()
     return expected_total
+
+
+def initialize_section_attempts(state: BlogState) -> None:
+    plan = state["plan"]
+    if plan is None:
+        raise ValueError("initialize_section_attempts called without a plan.")
+    run_id = state.get("run_id", "")
+    with Session(get_engine()) as session:
+        for task in plan.tasks:
+            stmt = select(SectionAttempt).where(
+                SectionAttempt.run_id == run_id,
+                SectionAttempt.task_id == task.id,
+            )
+            existing = session.exec(stmt).first()
+            if existing is None:
+                session.add(
+                    SectionAttempt(
+                        run_id=run_id,
+                        task_id=task.id,
+                        status="PENDING",
+                    )
+                )
+        session.commit()
 
 
 def collect_sections_from_kafka(

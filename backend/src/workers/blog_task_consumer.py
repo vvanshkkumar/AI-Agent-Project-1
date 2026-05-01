@@ -1,14 +1,18 @@
 import json
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 
 from kafka import KafkaConsumer, KafkaProducer
+from sqlmodel import Session, select
 
 from api.ai.llms import get_blog_llm
+from api.blog.db_models import SectionAttempt
 from api.blog.kafka_sections import ensure_blog_topics
 from api.blog.nodes.worker_node import generate_section_from_payload
-from kafka_config import BLOG_SECTIONS_TOPIC, BLOG_TASKS_TOPIC, KAFKA_BOOTSTRAP_SERVERS
+from db import get_engine, init_db
+from kafka_config import BLOG_SECTIONS_TOPIC, BLOG_TASKS_TOPIC, KAFKA_BOOTSTRAP_SERVERS, SECTION_MAX_ATTEMPTS
 from observers.audit_log_observer import AuditLogObserver
 from observers.publisher import publisher
 from observers.redis_status_observer import RedisStatusObserver
@@ -83,8 +87,80 @@ def publish_section(producer: KafkaProducer, payload: dict, markdown: str) -> No
     producer.flush()
 
 
+def get_section_attempt(run_id: str, task_id: int) -> SectionAttempt | None:
+    with Session(get_engine()) as session:
+        stmt = select(SectionAttempt).where(
+            SectionAttempt.run_id == run_id,
+            SectionAttempt.task_id == task_id,
+        )
+        return session.exec(stmt).first()
+
+
+def mark_processing(run_id: str, task_id: int) -> int:
+    with Session(get_engine()) as session:
+        record = _get_or_create_attempt(session, run_id, task_id)
+        record.status = "PROCESSING"
+        record.attempts += 1
+        record.last_attempt_at = datetime.utcnow()
+        record.error_message = None
+        session.add(record)
+        session.commit()
+        return record.attempts
+
+
+def mark_done(run_id: str, task_id: int) -> None:
+    with Session(get_engine()) as session:
+        record = _get_or_create_attempt(session, run_id, task_id)
+        record.status = "DONE"
+        record.last_attempt_at = datetime.utcnow()
+        record.error_message = None
+        session.add(record)
+        session.commit()
+
+
+def mark_failed(run_id: str, task_id: int, error: str) -> int:
+    with Session(get_engine()) as session:
+        record = _get_or_create_attempt(session, run_id, task_id)
+        record.status = "FAILED"
+        record.last_attempt_at = datetime.utcnow()
+        record.error_message = error[:2000]
+        session.add(record)
+        session.commit()
+        return record.attempts
+
+
+def mark_permanently_failed(run_id: str, task_id: int, error: str | None = None) -> None:
+    with Session(get_engine()) as session:
+        record = _get_or_create_attempt(session, run_id, task_id)
+        record.status = "PERMANENTLY_FAILED"
+        record.last_attempt_at = datetime.utcnow()
+        if error:
+            record.error_message = error[:2000]
+        session.add(record)
+        session.commit()
+
+
+def _get_or_create_attempt(
+    session: Session,
+    run_id: str,
+    task_id: int,
+) -> SectionAttempt:
+    stmt = select(SectionAttempt).where(
+        SectionAttempt.run_id == run_id,
+        SectionAttempt.task_id == task_id,
+    )
+    record = session.exec(stmt).first()
+    if record is None:
+        record = SectionAttempt(run_id=run_id, task_id=task_id)
+        session.add(record)
+        session.commit()
+        session.refresh(record)
+    return record
+
+
 def run() -> None:
     load_project_env()
+    init_db()
     configure_observers()
     wait_for_kafka()
     llm = get_blog_llm()
@@ -94,9 +170,45 @@ def run() -> None:
     for message in consumer:
         payload = message.value
         run_id = payload["run_id"]
-        task_id = payload["task_id"]
+        task_id = int(payload["task_id"])
 
         try:
+            existing = get_section_attempt(run_id, task_id)
+            if existing and existing.status == "PERMANENTLY_FAILED":
+                consumer.commit()
+                logger.error(
+                    json.dumps(
+                        {
+                            "event": "section_permanently_failed_skipping",
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "attempts": existing.attempts,
+                        }
+                    )
+                )
+                continue
+            if existing and existing.status != "DONE" and existing.attempts >= SECTION_MAX_ATTEMPTS:
+                mark_permanently_failed(
+                    run_id,
+                    task_id,
+                    existing.error_message or "Maximum section attempts exhausted.",
+                )
+                # At this point the message is a poison pill for this section.
+                # Committing moves the consumer group forward and leaves the
+                # permanent failure visible through the sections endpoint.
+                consumer.commit()
+                logger.error(
+                    json.dumps(
+                        {
+                            "event": "section_max_attempts_exhausted",
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "attempts": existing.attempts,
+                        }
+                    )
+                )
+                continue
+
             publisher.on_node_enter(run_id, "worker_node")
             if section_already_exists(payload):
                 markdown = read_existing_section(payload)
@@ -110,11 +222,23 @@ def run() -> None:
                     )
                 )
             else:
+                attempts = mark_processing(run_id, task_id)
+                logger.info(
+                    json.dumps(
+                        {
+                            "event": "section_attempt_started",
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "attempts": attempts,
+                        }
+                    )
+                )
                 _task, markdown = generate_section_from_payload(payload, llm)
                 write_section(payload, markdown)
 
             publish_section(producer, payload, markdown)
 
+            mark_done(run_id, task_id)
             # Manual commit is the delivery boundary. Until this succeeds, Kafka
             # is allowed to redeliver the task to this or another worker.
             consumer.commit()
@@ -134,6 +258,7 @@ def run() -> None:
                 )
             )
         except Exception as exc:
+            attempts = mark_failed(run_id, task_id, str(exc))
             publisher.on_node_exit(run_id, "worker_node", "FAILED", {"error": str(exc)})
             # Do not commit on failure. Kafka will redeliver the task according
             # to consumer group ownership, which is the reliability mechanism.
@@ -143,6 +268,7 @@ def run() -> None:
                         "event": "section_failed_offset_not_committed",
                         "run_id": run_id,
                         "task_id": task_id,
+                        "attempts": attempts,
                         "error": str(exc),
                     }
                 )
