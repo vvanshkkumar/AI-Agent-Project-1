@@ -11,3 +11,6 @@ tavily-python
 google-genai
 apscheduler
 markdown
+redis==5.0.1
+celery==5.3.6
+kafka-python==2.3.1
