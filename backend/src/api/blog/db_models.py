@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -39,3 +39,18 @@ class FailedJob(SQLModel, table=True):
     status: str = Field(default="open", index=True)
     failed_at: datetime = Field(default_factory=datetime.utcnow, index=True)
     requeued_at: datetime | None = None
+
+
+class SectionAttempt(SQLModel, table=True):
+    __tablename__ = "section_attempts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "task_id", name="uq_section_attempt_run_task"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: str = Field(index=True)
+    task_id: int = Field(index=True)
+    status: str = Field(default="PENDING", index=True)
+    attempts: int = Field(default=0)
+    last_attempt_at: datetime | None = None
+    error_message: str | None = None

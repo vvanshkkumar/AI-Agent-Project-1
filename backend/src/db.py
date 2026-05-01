@@ -16,7 +16,7 @@ def get_engine() -> Engine:
     return _engine
 
 def init_db():
-    from api.blog.db_models import FailedJob, PipelineEvent, ScheduledEmail  # noqa: F401
+    from api.blog.db_models import FailedJob, PipelineEvent, ScheduledEmail, SectionAttempt  # noqa: F401
     from api.chat.db_models import ChatMessage  # noqa: F401
 
     engine = get_engine()
