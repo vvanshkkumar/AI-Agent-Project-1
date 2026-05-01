@@ -1,8 +1,11 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from api.ai.schemas import EmailMessageSchema
 from api.ai.services import generate_email
+from cache import get_cached_recents, invalidate_recents_cache, set_cached_recents
 from .db_models import ChatMessage, ChatMessagePayload
 from db import get_session
 from settings import ConfigurationError
@@ -19,10 +22,15 @@ def chat_health():
 # curl http://localhost:8000/api/recents/
 @router.get("/recents/")
 def chat_list_messages(session : Session = Depends(get_session)):
+    cached = get_cached_recents()
+    if cached:
+        return json.loads(cached)
 
     query = select(ChatMessage).order_by(ChatMessage.id.desc()).limit(10) # sql -> query
     results = session.exec(query).all()
-    return results
+    serialized = [message.model_dump() for message in results]
+    set_cached_recents(json.dumps(serialized))
+    return serialized
 
 
 # curl -X POST -d '{"message" : "got fired from job without any reason"}' -H"Content-Type: application/json" http://localhost:8000/api/create/
@@ -40,5 +48,6 @@ def chat_create_message(payload:ChatMessagePayload,
     obj = ChatMessage.model_validate(data) # validate if no component is missing
     session.add(obj)
     session.commit()
+    invalidate_recents_cache()
     
     return response

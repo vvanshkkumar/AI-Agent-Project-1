@@ -1,12 +1,18 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc
 from sqlmodel import Session, select
 
+from cache import (
+    CacheUnavailableError,
+    check_rate_limit,
+    get_cached_preview,
+    set_cached_preview,
+)
 from api.blog.db_models import ScheduledEmail
 from api.blog.newsletter import build_schedule_body, read_run_markdown, send_existing_run_email
 from api.blog.presentation import normalize_markdown_for_web, render_markdown_html
@@ -15,6 +21,7 @@ from api.blog.service import run_blog_generation
 from api.blog.storage import find_markdown_file, resolve_run_asset_path
 from api.myEmailer.sender import send_mail
 from db import get_session
+from observers.status import get_run_status
 from settings import ConfigurationError, get_email_settings
 
 router = APIRouter(prefix="/blog", tags=["blog"])
@@ -40,9 +47,25 @@ class ExistingBlogScheduleRequest(ExistingBlogEmailRequest):
 
 @router.post("/generate")
 def generate_blog(
+    request: Request,
     payload: BlogGenerateRequest,
     session: Session = Depends(get_session),
 ):
+    client_key = _client_key(request)
+    try:
+        rate_limit = check_rate_limit(client_key)
+    except CacheUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not rate_limit.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Rate limit exceeded: "
+                f"max {rate_limit.limit} blog generations per "
+                f"{rate_limit.window_seconds} seconds"
+            ),
+        )
+
     if payload.send_now and not payload.to_email:
         raise HTTPException(status_code=400, detail="to_email is required when send_now is true")
     if payload.schedule_at is not None and not payload.to_email:
@@ -165,6 +188,11 @@ def blog_runtime():
     return describe_blog_runtime()
 
 
+@router.get("/runs/{run_id}/status")
+def blog_run_status(run_id: str):
+    return get_run_status(run_id)
+
+
 @router.get("/runs/{run_id}/markdown", response_class=PlainTextResponse)
 def get_blog_markdown(run_id: str):
     md_file = find_markdown_file(run_id)
@@ -177,11 +205,16 @@ def get_blog_markdown(run_id: str):
 
 @router.get("/runs/{run_id}/preview", response_class=HTMLResponse)
 def preview_blog(run_id: str):
+    cached = get_cached_preview(run_id)
+    if cached:
+        return HTMLResponse(cached)
+
     md_file = find_markdown_file(run_id)
     if md_file is None or not md_file.exists():
         raise HTTPException(status_code=404, detail="Blog run not found")
     content = md_file.read_text(encoding="utf-8")
     html = render_markdown_html(run_id, content)
+    set_cached_preview(run_id, html)
     return HTMLResponse(html)
 
 
@@ -191,3 +224,12 @@ def get_blog_asset(run_id: str, asset_path: str):
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Asset not found")
     return FileResponse(Path(file_path))
+
+
+def _client_key(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
